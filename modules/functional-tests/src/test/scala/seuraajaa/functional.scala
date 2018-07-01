@@ -1,13 +1,12 @@
 package seuraajaa
 
 import common._
-import seuraajaa.models._
 import monix.eval.Task
 import monix.execution.Scheduler
+import seuraajaa.models._
 
 import scala.concurrent.duration.DurationInt
 import scala.util.Random
-import scala.util.control.NonFatal
 
 class FunctionalTest extends Test {
   import monix.execution.Scheduler.Implicits.global
@@ -17,7 +16,6 @@ class FunctionalTest extends Test {
 
   "server" should "work" in {
     val config = Config()
-    val server = Server(config)
 
     def client(id: ClientId) = id -> new Client(id, config.clientPort)
     val clients = helper.expectedEvents.keys.map(client).toMap
@@ -25,29 +23,23 @@ class FunctionalTest extends Test {
     val eventsSeq = Random.shuffle(helper.eventsSeq)
 
     val flow = for {
-      eventSource <- Task.eval(new EventSource(config.eventSourcePort))
+      server <- Server(config)
+      eventSource <- EventSource(config.eventSourcePort)
       future = server.run.runAsync(serverScheduler)
       clientTask = for {
-        _ <- Task.eval(clients.values.foreach(_.register()))
-        _ <- Task.eval(eventsSeq.foreach(eventSource.emit))
-        _ <- Task.eval(eventSource.flush())
+        _ <- Task.gatherUnordered(clients.values.map(_.register))
+        _ <- Task.gatherUnordered(eventsSeq.map(eventSource.emit))
+        _ <- eventSource.flush
         _ <- Task.gatherUnordered(clients.map { case (id, c) =>
-          Task.eval {
-            val expectedEvents = helper.expectedEvents(id)
-            val events = c.events(expectedEvents.size)
-            events.map(_.seqNum) shouldBe expectedEvents.toList
-          }
+          val expectedEvents = helper.expectedEvents(id)
+          c.events(expectedEvents.size).map(_.map(_.seqNum) shouldBe expectedEvents.toList)
         })
       } yield ()
-      cancel = Task.eval {
-        try {
-          future.cancel()
-          server.shutdown()
-          clients.values.foreach(_.shutdown())
-        } catch {
-          case NonFatal(e) => println(s"Can't shutdown! ${e.getMessage}")
-        }
-      }
+      cancel = for {
+        _ <- server.shutdown
+        _ <- Task.eval(future.cancel())
+        _ <- Task.gatherUnordered(clients.values.map(_.shutdown))
+      } yield ()
       _ <- clientTask.onErrorFallbackTo(for {
         _ <- cancel
         _ = fail()

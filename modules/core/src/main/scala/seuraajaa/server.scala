@@ -2,16 +2,15 @@ package seuraajaa
 
 import java.net._
 
-import seuraajaa.models._
-import seuraajaa.parser._
 import monix.eval._
 import monix.reactive.Observable
+import seuraajaa.models._
+import seuraajaa.parser._
 
 import scala.concurrent.duration.Duration
 import scala.io.BufferedSource
-import scala.util.control.NonFatal
 
-class Server(config: Config) {
+class Server private[Server](config: Config) {
   private[this] val handler = new Handler(socketNotifier)
   private[this] val eventSourceSocket = bind(config.eventSourcePort)
   private[this] val clientsSocket = bind(config.clientPort)
@@ -19,28 +18,16 @@ class Server(config: Config) {
   val run: Task[Unit] = {
     val initialState = HandlerState.initial
 
-    val acceptClient = Task {
-      try {
-        val socket = clientsSocket.accept()
-        val id = new BufferedSource(socket.getInputStream).getLines.next
-        Some(id.toLong -> socket)
-      } catch {
-        case NonFatal(e) =>
-          println(s"Error occurred when connecting client $e")
-          None
-      }
-    }
+    val acceptClient = Task.eval {
+      val socket = clientsSocket.accept()
+      val id = new BufferedSource(socket.getInputStream).getLines.next
+      Some(id.toLong -> socket)
+    }.onErrorHandle(_ => None)
 
-    val acceptEventSource = Task {
-      try {
-        val inputStream = eventSourceSocket.accept().getInputStream
-        Some(new BufferedSource(inputStream).getLines)
-      } catch {
-        case NonFatal(e) =>
-          println(s"Error occurred when connecting event source $e")
-          None
-      }
-    }
+    val acceptEventSource = Task.eval {
+      val inputStream = eventSourceSocket.accept().getInputStream
+      Some(new BufferedSource(inputStream).getLines)
+    }.onErrorHandle(_ => None)
 
     def clientSubscriber(clients: MVar[Clients]) =
       Observable.fromIterator(Iterator.continually(()))
@@ -49,8 +36,8 @@ class Server(config: Config) {
         .mapTask(_ => acceptClient)
         .filter(_.isDefined)
         .map(_.get)
-        .mapTask {
-          case (id, s) => for {
+        .mapTask { case (id, s) =>
+          for {
             map <- clients.take
             _ <- clients.put(map + (id -> s))
           } yield ()
@@ -69,12 +56,12 @@ class Server(config: Config) {
             .map(parse)
             .filter(_.isDefined)
             .map(_.get)
-            .flatScan(initialState) { case (state, event) =>
-              Observable.fromTask(for {
+            .scanTask(Task.pure(initialState)) { case (state, event) =>
+              for {
                 map <- clients.take
                 state <- handler.handle(event, state, map)
                 _ <- clients.put(map)
-              } yield state)
+              } yield state
             })
         .completedL
 
@@ -86,9 +73,9 @@ class Server(config: Config) {
     } yield ()
   }
 
-  def shutdown(): Unit = List(clientsSocket, eventSourceSocket).foreach(_.close())
+  val shutdown: Task[Unit] = Task.eval(List(clientsSocket, eventSourceSocket).foreach(_.close()))
 
-  private[this] def bind(port: Int) = {
+  private[this] def bind(port: Int): ServerSocket = {
     val socket = new ServerSocket()
     socket.setReuseAddress(true)
     socket.bind(new InetSocketAddress(port))
@@ -99,8 +86,10 @@ class Server(config: Config) {
 object Server {
   import monix.execution.Scheduler.Implicits.global
 
-  def apply(config: Config) = new Server(config)
+  def apply(config: Config): Task[Server] = Task.eval(new Server(config))
 
-  def main(args: Array[String]): Unit =
-    Server(Config()).run.runSyncUnsafe(Duration.Inf)
+  def main(args: Array[String]): Unit = (for {
+    server <- Server(Config())
+    _ <- server.run
+  } yield ()).runSyncUnsafe(Duration.Inf)
 }
