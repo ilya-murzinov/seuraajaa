@@ -24,6 +24,7 @@ lazy val core = (project in file("modules/core"))
 lazy val benchmarks = (project in file("modules/benchmarks"))
   .settings(settings)
   .settings(name := "benchmarks")
+  .settings(libraryDependencies += akkaStreams)
   .enablePlugins(JmhPlugin)
   .dependsOn(core % "compile->compile;test->test")
 

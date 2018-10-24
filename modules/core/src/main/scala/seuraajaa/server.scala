@@ -30,7 +30,7 @@ class Server private[Server](config: Config) {
     }.onErrorHandle(_ => None)
 
     def clientSubscriber(clients: MVar[Clients]) =
-      Observable.fromIterator(Iterator.continually(()))
+      Observable.repeat(())
         .doOnSubscribe(() =>
           println(s"Client subscriber started, waiting for connections on ${config.clientPort}..."))
         .mapTask(_ => acceptClient)

@@ -36,7 +36,7 @@ class FunctionalTest extends Test {
         })
       } yield ()
       cancel = for {
-        _ <- server.shutdown
+//        _ <- server.shutdown
         _ <- Task.eval(future.cancel())
         _ <- Task.gatherUnordered(clients.values.map(_.shutdown))
       } yield ()
