@@ -12,7 +12,7 @@ package object common {
     implicit class TaskOps[A](task: Task[A]) {
       import monix.execution.Scheduler.Implicits.global
 
-      def run: A = task.runSyncUnsafe(5.second)
+      def run: A = task.runSyncUnsafe(1.second)
     }
   }
 
