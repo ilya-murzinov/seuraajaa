@@ -1,8 +1,9 @@
 package seuraajaa
 
-import models._
-import internal._
-import monix.eval.Task
+import monix.eval.{MVar, Task}
+import monix.reactive.Observable
+import seuraajaa.internal._
+import seuraajaa.models._
 
 import scala.annotation.tailrec
 
@@ -16,9 +17,31 @@ object HandlerState {
 }
 
 class Handler(notifier: Notifier) {
+
   def handle(event: Event,
              pState: HandlerState,
-             clients: Clients): Task[HandlerState] = {
+             clients: MVar[Clients]): Task[HandlerState] = {
+
+    val (events, heap, seqNum) = sequentialEvents(event, pState.queue, pState.nextSeqNum)
+
+    if (events.isEmpty) {
+      Task.pure(pState.copy(queue = pState.queue.insert(event)))
+    } else {
+      Observable.fromIterable(events)
+        .scanTask(Task.pure(pState)) { case (s, e) =>
+          for {
+            map <- clients.take
+            followers <- processEvent(e, s.followers, map)
+            _ <- clients.put(map)
+          } yield HandlerState(followers, seqNum, heap)
+        }
+        .lastL
+    }
+  }
+
+  private[this] def sequentialEvents(event: Event,
+                       queue: Heap[Event],
+                       seqNum: SeqNum): (Seq[Event], Heap[Event], SeqNum) = {
     @tailrec
     def sequentialEvents(event: Event,
                          queue: Heap[Event],
@@ -32,13 +55,7 @@ class Handler(notifier: Notifier) {
         (acc, queue.insert(event), seqNum)
     }
 
-    val (events, queue, seqNum) = sequentialEvents(event, pState.queue, pState.nextSeqNum, Seq())
-
-    val processSequentialEvents: Task[Followers] = events.foldLeft(Task.pure(pState.followers)) { (s, e) =>
-      s.flatMap(followers => processEvent(e, followers, clients))
-    }
-
-    processSequentialEvents.map(fs => pState.copy(followers = fs, queue = queue, nextSeqNum = seqNum))
+    sequentialEvents(event, queue, seqNum, Seq())
   }
 
   private[this] def processEvent(event: Event,

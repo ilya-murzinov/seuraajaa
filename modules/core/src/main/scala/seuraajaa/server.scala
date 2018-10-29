@@ -56,13 +56,7 @@ class Server private[Server](config: Config) {
             .map(parse)
             .filter(_.isDefined)
             .map(_.get)
-            .scanTask(Task.pure(initialState)) { case (state, event) =>
-              for {
-                map <- clients.take
-                state <- handler.handle(event, state, map)
-                _ <- clients.put(map)
-              } yield state
-            })
+            .scanTask(Task.pure(initialState))((state, event) => handler.handle(event, state, clients)))
         .completedL
 
     for {
